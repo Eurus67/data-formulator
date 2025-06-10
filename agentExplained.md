@@ -18,13 +18,13 @@
 ### **输出**
 返回一个包含n个候选字典结果的列表，每个结果包含以下内容：
 - `status`：`'ok'` 或 `'other error'`
-- `code`：生成的 TypeScript 代码块（如果成功）
+- `content`：生成的 TypeScript 代码块（如果成功）
 - `dialog`：LLM 对话记录
 - `agent`：`"ConceptDeriveAgent"`
 
 ---
 
-### **Workflow**
+### **执行步骤**
 
 #### **1. 生成数据总结**
 
@@ -86,6 +86,118 @@ for choice in response.choices:
     ]
     result['agent'] = 'ConceptDeriveAgent'
     candidates.append(result)
+```
+
+---
+
+## Py Concept Derivation Agent
+
+根据用户对新字段的描述，调用 LLM 生成对应的数据转换代码，执行后返回包含新字段的表格
+
+---
+
+###  **输入**
+| Parameter       | Type         | 
+|----------------|--------------|
+| `input_table`   | `dict`       |
+| `input_fields`  | `List[str]`  |
+| `output_field`  | `str`        |
+| `description`   | `str`        | 
+
+---
+
+### **输出**
+返回一个包含n个候选字典结果的列表，每个结果包含以下内容：
+- `status`：`'ok'` 或 `'other error'`
+- `content`：生成的包含新字段的表格（以字典列表的形式）
+- `dialog`：LLM 对话记录
+- `agent`：`"ConceptDeriveAgent"`
+
+---
+
+### **执行步骤**
+
+#### **1. 生成数据总结**
+
+```python
+data_summary = generate_data_summary([input_table], include_data_samples=True)
+```
+
+---
+
+#### **2. 推断`input_fields`中每个field对应的 ts 数据类型, 并生成符合ts格式的参数字符串**
+
+```python
+input_fields_info = [{"name": name, "type": infer_ts_datatype(pd.DataFrame(input_table['rows']), name)} for name in input_fields]
+arg_string = ", ".join([f"{field_name_to_ts_variable_name(field['name'])} : {field['type']}" for field in input_fields_info])
+```
+
+---
+
+#### **3. 构建user_query**
+
+```python
+objective = {
+            "input_fields": input_fields,
+            "output_field": output_field,
+            "description": description
+        }
+        
+user_query = f"[CONTEXT]\n\n{data_summary}\n\n[GOAL]\n\n{objective}\n\n[OUTPUT]\n"
+```
+
+---
+
+#### **5. 模型推理**
+
+```python
+messages = [
+    {"role": "system", "content": SYSTEM_PROMPT},
+    {"role": "user", "content": user_query}
+]
+response = self.client.get_completion(messages=messages)
+```
+
+---
+
+#### **6. 生成并返回candidates**
+- 从每个回答里提取 Python代码块
+- 在sandbox中运行提取的代码（run_derive_concept），生成新的pd dataframe
+- 将运行状态、新dataframe、对话记录、agent名字存为一个candidate
+- 可以有多个candidate, 最终返回一个candidates列表
+
+```python
+candidates = []
+        for choice in response.choices:
+            
+            logger.info("\n=== Python Data Derive Agent ===>\n")
+            logger.info(choice.message.content + "\n")
+
+            code_blocks = extract_code_from_gpt_response(choice.message.content + "\n", "python")
+
+            if len(code_blocks) > 0:
+                code_str = code_blocks[-1]
+                try:
+                    result =  py_sandbox.run_derive_concept(code_str, output_field, input_table['rows'], self.exec_python_in_subprocess)
+
+                    if result['status'] == 'ok':
+                        result['content'] = {
+                            'rows': result['content'].to_dict(orient='records'),
+                        }
+                    else:
+                        print(result['content'])
+                    result['code'] = code_str
+                except Exception as e:
+                    print('other error:')
+                    error_message = traceback.format_exc()
+                    print(error_message)
+                    result = {'status': 'other error', 'content': error_message}
+            else:
+                result = {'status': 'other error', 'content': 'unable to extract code from response'}
+
+            result['dialog'] = [*messages, {"role": choice.message.role, "content": choice.message.content}]
+            result['agent'] = 'PyConceptDeriveAgent'
+            candidates.append(result)
 ```
 
 ---
