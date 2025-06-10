@@ -201,3 +201,111 @@ candidates = []
 ```
 
 ---
+
+# DataCleanAgent
+
+`DataCleanAgent` 使用LLM根据用户指定的输入推断适当的清理操作来清理原始数据
+
+---
+
+### **输入**
+
+| Parameter | Type |
+|----------|------|
+| `content_type` | `"text"` or `"image"` |
+| `raw_data` | `str` |
+| `image_cleaning_instruction` | `str` | 
+
+---
+
+### **输出**
+返回一个包含candidate列表，每个结果包含以下内容：
+- `status`：`'ok'` 或 `'other error'`
+- `content`：csv格式的经过清理的数据
+- `dialog`：LLM 对话记录
+- `agent`：'DataCleanAgent'
+
+---
+
+### **执行步骤**
+
+#### **1. 根据不同输入数据类型生成user_prompt**
+如果是"text", 包括输入的原数据
+
+```python
+user_prompt = {
+                "role": "user",
+                "content": [{
+                    'type': 'text',
+                    'text': f"[DATA]\n\n{raw_data}\n\n[OUTPUT]\n"
+                }]
+            }
+```
+---
+如果是"image"，包括图片url和非必须的用户指令
+
+```python
+user_prompt = {
+                'role': 'user',
+                'content': [ {
+                    'type': 'text',
+                    'text': '''[RAW_DATA]\n\n'''},
+                    {
+                        'type': 'image_url',
+                        'image_url': {
+                            "url": raw_data,
+                            "detail": "high"
+                        }
+                    },
+                    {
+                        'type': 'text',
+                        'text': f'''{cleaning_prompt}[OUTPUT]\n\n'''
+                    }, 
+                ]
+            }
+```
+---
+
+#### **2. 模型推理**
+system_message需要和user_prompt保持格式一致。
+
+```python
+system_message = {
+            'role': 'system',
+            'content': [ {'type': 'text', 'text': SYSTEM_PROMPT}]}
+
+messages = [system_message, user_prompt]
+        
+
+response = self.client.get_completion(messages = messages)
+```
+system_prompt中的要求包括让AI生成csv数据块和一个包括以下内容的json：
+- mode："data generation" or "data cleaning" （但是没用到）
+- reason: 解释一下清洗原因
+
+---
+
+#### **3. 生成并返回candidates**
+- 从每个回答里提取csv数据块和json
+- 将csv、json内容、对话记录、agent名字存为一个candidate
+- 可以有多个candidates, 最终返回一个列表
+
+```python
+candidates = []
+for choice in response.choices:
+    code_blocks = extract_code_from_gpt_response(choice.message.content + "\n", "typescript")
+
+    if len(code_blocks) > 0:
+        result = {'status': 'ok', 'code': code_blocks[-1]}
+    else:
+        result = {'status': 'other error', 'content': 'unable to extract code from response'}
+
+    result['dialog'] = [
+        *messages,
+        {"role": choice.message.role, "content": choice.message.content}
+    ]
+    result['agent'] = 'ConceptDeriveAgent'
+    candidates.append(result)
+```
+
+---
